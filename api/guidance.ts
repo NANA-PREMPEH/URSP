@@ -1,4 +1,4 @@
-import { getGuidanceResult } from "../src/server/urspApi";
+import { getGuidanceResult } from "../src/server/urspApi.js";
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {

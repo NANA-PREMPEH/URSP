@@ -7,7 +7,7 @@ import {
   getSopPolishResult,
   getVisaFeedbackResult,
   type RouteResult,
-} from "./src/server/urspApi";
+} from "./src/server/urspApi.js";
 
 function sendRouteResult(res: express.Response, result: RouteResult): void {
   res.status(result.status).json(result.body);

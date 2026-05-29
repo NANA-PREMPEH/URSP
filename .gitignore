@@ -7,3 +7,5 @@ coverage/
 server.js
 .env*
 !.env.example
+
+.vercel
