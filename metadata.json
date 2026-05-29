@@ -1,0 +1,6 @@
+{
+  "name": "Ubuntu Rising Scholars Program",
+  "description": "The official resource and interactive portal for the Ubuntu Rising Scholars Program (URSP) - a global mentorship initiative founded by Festus Cobena Ainoo to help African scholars secure admissions and funding for study abroad.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
