@@ -2,16 +2,13 @@
 <img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
 </div>
 
-# Run and deploy your AI Studio app
+# Run and deploy your URSP app
 
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/dae97a66-8316-4bd3-a8e3-1d9630c00715
+This repo contains a Vite frontend plus `/api` endpoints for the Ubuntu Rising Scholars Program app.
 
 ## Run Locally
 
 **Prerequisites:**  Node.js
-
 
 1. Install dependencies:
    `npm install`
@@ -19,3 +16,27 @@ View your app in AI Studio: https://ai.studio/apps/dae97a66-8316-4bd3-a8e3-1d963
 3. Optional: set `OPENROUTER_MODEL=openrouter/free` in `.env.local` to keep the app on free models by default
 4. Run the app:
    `npm run dev`
+
+The local dev server runs at `http://localhost:3000`.
+
+## Deploy on Vercel
+
+1. Push this repo to GitHub.
+2. Import the repo into Vercel.
+3. Keep the framework preset as `Vite`.
+4. Set these environment variables in Vercel Project Settings:
+   `OPENROUTER_API_KEY` required
+   `OPENROUTER_MODEL` optional
+   `APP_URL` optional, recommended for your production domain
+5. Deploy.
+
+Vercel will build the frontend into `dist/` and serve the backend through these serverless functions:
+- `/api/health`
+- `/api/guidance`
+- `/api/sop/polish`
+- `/api/visa/feedback`
+
+## Optional local Vercel emulation
+
+If you want to test the exact Vercel routing model locally, you can also run:
+`vercel dev`

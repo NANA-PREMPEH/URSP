@@ -1,93 +1,203 @@
-// server.ts
-import express from "express";
-import path from "path";
 import dotenv from "dotenv";
-import { createServer as createViteServer } from "vite";
+
 dotenv.config({ path: ".env.local" });
 dotenv.config();
-function getOpenRouterApiKey() {
+
+type JsonBody = Record<string, unknown>;
+
+type ChatRole = "system" | "user" | "assistant";
+
+type ChatMessage = {
+  role: ChatRole;
+  content: string;
+};
+
+export type RouteResult<T extends JsonBody = JsonBody> = {
+  status: number;
+  body: T;
+};
+
+function ok<T extends JsonBody>(body: T): RouteResult<T> {
+  return { status: 200, body };
+}
+
+function fail(message: string, status = 500): RouteResult<{ error: string }> {
+  return { status, body: { error: message } };
+}
+
+function asObject(value: unknown): JsonBody {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as JsonBody;
+  }
+
+  return {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+function getAppUrl(): string | null {
+  const explicitUrl = process.env.APP_URL?.trim();
+  if (explicitUrl) {
+    return explicitUrl;
+  }
+
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) {
+    return `https://${vercelUrl}`;
+  }
+
+  return null;
+}
+
+function getOpenRouterApiKey(): string {
   const rawApiKey = process.env.OPENROUTER_API_KEY;
   if (!rawApiKey) {
-    throw new Error("OPENROUTER_API_KEY is missing. Add it to .env.local and restart npm run dev.");
+    throw new Error("OPENROUTER_API_KEY is missing. Add it to your environment and restart the app.");
   }
+
   const apiKey = rawApiKey.replace(/^Bearer\s+/i, "").trim();
   if (/^https?:\/\//i.test(apiKey) || /[:/]/.test(apiKey)) {
-    throw new Error("OPENROUTER_API_KEY looks malformed or URL-like, not like an API key. Paste the actual key from https://openrouter.ai/keys into .env.local and restart npm run dev.");
+    throw new Error(
+      "OPENROUTER_API_KEY looks malformed or URL-like, not like an API key. Paste the actual key from https://openrouter.ai/keys into your environment and restart the app.",
+    );
   }
+
   return apiKey;
 }
-function getOpenRouterModel() {
+
+function getOpenRouterModel(): string {
   return process.env.OPENROUTER_MODEL || "openrouter/free";
 }
-function hasOpenRouterConfig() {
+
+function hasOpenRouterConfig(): boolean {
   return Boolean(process.env.OPENROUTER_API_KEY);
 }
-function getOpenRouterSetupFix() {
+
+function getOpenRouterSetupFix(): string {
+  const isHostedRuntime = process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+
   if (process.env.GEMINI_API_KEY && !process.env.OPENROUTER_API_KEY) {
-    return "**Setup fix:** I found a legacy `GEMINI_API_KEY`. Replace it with `OPENROUTER_API_KEY` in `.env.local`, then restart `npm run dev`.";
+    if (isHostedRuntime) {
+      return "**Setup fix:** Replace the legacy `GEMINI_API_KEY` secret with `OPENROUTER_API_KEY` in your hosting environment, then redeploy.";
+    }
+
+    return "**Setup fix:** Replace the legacy `GEMINI_API_KEY` in `.env.local` with `OPENROUTER_API_KEY`, then restart `npm run dev`.";
   }
+
+  if (isHostedRuntime) {
+    return "**Setup fix:** Add `OPENROUTER_API_KEY` to your hosting environment variables, then redeploy.";
+  }
+
   return "**Setup fix:** Add `OPENROUTER_API_KEY=...` to `.env.local`, then restart `npm run dev`.";
 }
-function toChatRole(role) {
+
+function toChatRole(role: string): ChatRole {
   if (role === "assistant" || role === "model") return "assistant";
   if (role === "system") return "system";
   return "user";
 }
-function extractOpenRouterText(payload) {
-  const content = payload?.choices?.[0]?.message?.content;
+
+function extractOpenRouterText(payload: unknown): string {
+  const message = asObject(asObject(asObject(payload).choices?.[0]).message);
+  const content = message.content;
+
   if (typeof content === "string" && content.trim()) {
     return content;
   }
+
   if (Array.isArray(content)) {
-    const text = content.map((part) => {
-      if (typeof part === "string") return part;
-      if (part?.type === "text" && typeof part.text === "string") return part.text;
-      return "";
-    }).filter(Boolean).join("\n").trim();
+    const text = content
+      .map((part) => {
+        if (typeof part === "string") return part;
+
+        const objectPart = asObject(part);
+        if (objectPart.type === "text" && typeof objectPart.text === "string") {
+          return objectPart.text;
+        }
+
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+
     if (text) {
       return text;
     }
   }
+
   return "";
 }
-async function generateOpenRouterText(messages, temperature) {
-  const headers = {
-    "Authorization": `Bearer ${getOpenRouterApiKey()}`,
+
+async function generateOpenRouterText(messages: ChatMessage[], temperature: number): Promise<string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${getOpenRouterApiKey()}`,
     "Content-Type": "application/json",
-    "X-Title": "Ubuntu Rising Scholars Program"
+    "X-Title": "Ubuntu Rising Scholars Program",
   };
-  if (process.env.APP_URL) {
+
+  const appUrl = getAppUrl();
+  if (appUrl) {
     try {
-      const appUrl = new URL(process.env.APP_URL);
-      if (appUrl.protocol === "http:" || appUrl.protocol === "https:") {
-        headers["HTTP-Referer"] = appUrl.toString();
+      const parsedUrl = new URL(appUrl);
+      if (parsedUrl.protocol === "http:" || parsedUrl.protocol === "https:") {
+        headers["HTTP-Referer"] = parsedUrl.toString();
       }
     } catch {
+      // Ignore invalid APP_URL values in local development or hosted envs.
     }
   }
+
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers,
     body: JSON.stringify({
       model: getOpenRouterModel(),
       messages,
-      temperature
-    })
+      temperature,
+    }),
   });
+
   const payload = await response.json().catch(() => null);
+
   if (!response.ok) {
-    const apiError = payload?.error?.message || payload?.message || `OpenRouter request failed with status ${response.status}.`;
+    const errorPayload = asObject(payload);
+    const nestedError = asObject(errorPayload.error);
+    const apiError =
+      asString(nestedError.message) ||
+      asString(errorPayload.message) ||
+      `OpenRouter request failed with status ${response.status}.`;
+
     throw new Error(apiError);
   }
+
   const text = extractOpenRouterText(payload);
   if (!text) {
     throw new Error("OpenRouter returned an empty response.");
   }
+
   return text;
 }
-function offlineGuidanceReply(message) {
+
+function offlineGuidanceReply(message: string): string {
   const msgLower = (message || "").toLowerCase();
-  if (msgLower.includes("toefl") || msgLower.includes("ielts") || msgLower.includes("waiver") || msgLower.includes("english")) {
+
+  if (
+    msgLower.includes("toefl") ||
+    msgLower.includes("ielts") ||
+    msgLower.includes("waiver") ||
+    msgLower.includes("english")
+  ) {
     return `### TOEFL/IELTS Waiver Guide (Offline Mode)
 
 Many universities in the US, UK, and Canada offer English proficiency waivers for students from Anglophone African countries. Here is the step-by-step process to request one:
@@ -101,7 +211,14 @@ Many universities in the US, UK, and Canada offer English proficiency waivers fo
 
 ${getOpenRouterSetupFix()}`;
   }
-  if (msgLower.includes("funding") || msgLower.includes("assistantship") || msgLower.includes("scholarship") || msgLower.includes("cost") || msgLower.includes("fee")) {
+
+  if (
+    msgLower.includes("funding") ||
+    msgLower.includes("assistantship") ||
+    msgLower.includes("scholarship") ||
+    msgLower.includes("cost") ||
+    msgLower.includes("fee")
+  ) {
     return `### Securing Graduate Funding & Assistantships (Offline Mode)
 
 At the Ubuntu Rising Scholars Program, we strongly discourage paying out-of-pocket for graduate school. Focus entirely on fully funded options:
@@ -116,7 +233,14 @@ At the Ubuntu Rising Scholars Program, we strongly discourage paying out-of-pock
 
 ${getOpenRouterSetupFix()}`;
   }
-  if (msgLower.includes("visa") || msgLower.includes("embassy") || msgLower.includes("interview") || msgLower.includes("f1") || msgLower.includes("f-1")) {
+
+  if (
+    msgLower.includes("visa") ||
+    msgLower.includes("embassy") ||
+    msgLower.includes("interview") ||
+    msgLower.includes("f1") ||
+    msgLower.includes("f-1")
+  ) {
     return `### F-1 Visa Interview Blueprint (Offline Mode)
 
 The visa interview is the final gate. Consular Officers usually evaluate three core pillars:
@@ -129,6 +253,7 @@ The visa interview is the final gate. Consular Officers usually evaluate three c
 
 ${getOpenRouterSetupFix()}`;
   }
+
   return `### Welcome to the URSP Offline Advisor
 
 I am currently running in **Offline Fallback Mode** because an \`OPENROUTER_API_KEY\` is not set in your environment.
@@ -142,7 +267,15 @@ You can also use the SOP Architect and Embassy Visa Sim tabs while the live AI c
 
 ${getOpenRouterSetupFix()}`;
 }
-function offlineSopReply(academicBackground, targetDegree, targetMajor, motivation, careerGoals, keyAchievements) {
+
+function offlineSopReply(
+  academicBackground: string,
+  targetDegree: string,
+  targetMajor: string,
+  motivation: string,
+  careerGoals: string,
+  keyAchievements: string,
+): string {
   return `### SOP Architecture Blueprint (Offline Mode)
 
 Here is a tailored Statement of Purpose outline designed for your application profile:
@@ -186,26 +319,38 @@ Here is a tailored Statement of Purpose outline designed for your application pr
 
 ${getOpenRouterSetupFix()}`;
 }
-function offlineVisaReply(questionText, studentAnswer) {
+
+function offlineVisaReply(questionText: string, studentAnswer: string): string {
   let strength = "You provided a direct answer to the visa question.";
   let risks = "Avoid generic answers. Make sure your financial support and academic goals are clear.";
-  let revised = "I am going to pursue my degree at my target university. My education is funded by a Graduate Assistantship which covers my tuition and provides a stipend. After graduation, I intend to return to apply these skills in my field.";
+  let revised =
+    "I am going to pursue my degree at my target university. My education is funded by a Graduate Assistantship which covers my tuition and provides a stipend. After graduation, I intend to return to apply these skills in my field.";
+
   if ((studentAnswer || "").length < 15) {
-    risks = "**High Risk: Answer is too brief.** Consular interviews are very short, but one-sentence or two-word answers can appear uncooperative or unprepared. Expand with details of your assistantship and academic intent.";
+    risks =
+      "**High Risk: Answer is too brief.** Consular interviews are very short, but one-sentence or two-word answers can appear uncooperative or unprepared. Expand with details of your assistantship and academic intent.";
   }
+
   if (questionText.toLowerCase().includes("funding") || questionText.toLowerCase().includes("pay")) {
     strength = "You directly address the source of financial support.";
-    risks = "Make sure to clearly distinguish between personal funds and institutional sponsorship. Mentioning part-time work is a major red flag.";
-    revised = '"My studies are fully funded by a Graduate Assistantship from the university, which covers 100% of my tuition fees and provides a monthly living stipend. I have my official admission and assistantship letter to verify this."';
+    risks =
+      "Make sure to clearly distinguish between personal funds and institutional sponsorship. Mentioning part-time work is a major red flag.";
+    revised =
+      '"My studies are fully funded by a Graduate Assistantship from the university, which covers 100% of my tuition fees and provides a monthly living stipend. I have my official admission and assistantship letter to verify this."';
   } else if (questionText.toLowerCase().includes("why") || questionText.toLowerCase().includes("choose")) {
     strength = "You express interest in the program or school.";
-    risks = "Avoid general statements like 'it is a great country' or 'it is a top school'. Focus on specific courses or research alignment.";
-    revised = '"I chose this university because their curriculum offers a specialized concentration in my field, and I want to work with the research labs focusing on these technologies. This program aligns perfectly with my research background in Africa."';
+    risks =
+      "Avoid general statements like 'it is a great country' or 'it is a top school'. Focus on specific courses or research alignment.";
+    revised =
+      '"I chose this university because their curriculum offers a specialized concentration in my field, and I want to work with the research labs focusing on these technologies. This program aligns perfectly with my research background in Africa."';
   } else if (questionText.toLowerCase().includes("return") || questionText.toLowerCase().includes("after")) {
     strength = "You discuss your plans after graduation.";
-    risks = "Expressing intent to seek permanent employment or migrate during the F-1 interview is a primary risk under Section 214(b). Focus on your ties and return plans.";
-    revised = '"Upon completing my degree, I plan to return to my home country to work as a specialist or university lecturer. There is a major shortage of expertise in this sector locally, and my degree will position me to lead development projects."';
+    risks =
+      "Expressing intent to seek permanent employment or migrate during the F-1 interview is a primary risk under Section 214(b). Focus on your ties and return plans.";
+    revised =
+      '"Upon completing my degree, I plan to return to my home country to work as a specialist or university lecturer. There is a major shortage of expertise in this sector locally, and my degree will position me to lead development projects."';
   }
+
   return `### Visa Sim Feedback (Offline Mode)
 
 ---
@@ -228,23 +373,8 @@ function offlineVisaReply(questionText, studentAnswer) {
 
 ${getOpenRouterSetupFix()}`;
 }
-async function startServer() {
-  const app = express();
-  const PORT = 3e3;
-  app.use(express.json());
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: (/* @__PURE__ */ new Date()).toISOString() });
-  });
-  app.post("/api/guidance", async (req, res) => {
-    try {
-      const { message, chatHistory } = req.body;
-      if (!hasOpenRouterConfig()) {
-        return res.json({ text: offlineGuidanceReply(message) });
-      }
-      const messages = [
-        {
-          role: "system",
-          content: `
+
+const guidanceSystemPrompt = `
 You are the URSP AI Advisor, a specialized virtual mentor representing the Ubuntu Rising Scholars Program (URSP).
 The program was founded by Festus Cobena Ainoo, a Ghanaian scholar-practitioner and higher education administrator at UMass Amherst.
 The program is built on the African philosophy of Ubuntu ("I am because we are") and provides free mentorship and application support to help African students secure admission, assistantships, and F-1 visas for international study (mainly in the US, but also Canada, UK, Australia, Europe).
@@ -257,52 +387,79 @@ Provide actionable, specific advice:
 - F-1 Visa: Advise applicants to focus on ties to their home country, honest preparation, clear plans of study, and explaining their funding clearly. Highlight that URSP has a strong track record of supporting F-1 visa approvals.
 
 Answer the user's inquiry concisely in elegant Markdown. Limit response to 300-400 words. Keep it scannable.
-          `.trim()
-        }
-      ];
-      if (Array.isArray(chatHistory)) {
-        for (const turn of chatHistory) {
-          if (!turn?.text) continue;
-          messages.push({
-            role: toChatRole(turn.role),
-            content: turn.text
-          });
-        }
-      }
-      messages.push({
-        role: "user",
-        content: message
-      });
-      const responseText = await generateOpenRouterText(messages, 0.7);
-      res.json({ text: responseText });
-    } catch (error) {
-      console.error("OpenRouter Guidance Error:", error);
-      res.status(500).json({ error: error.message || "An unexpected error occurred during your consultation." });
+`.trim();
+
+const sopSystemPrompt =
+  "You are an elite Graduate Admissions consultant specializing in fully funded opportunities in the Global North. Your focus is helper outlines that are structured and impactful.";
+
+const visaSystemPrompt =
+  "You are a former Consular Officer and F-1 Visa Interview Coach. Your feedback is candid, encourages honesty, and polishes language to sound organic and confident.";
+
+export function getHealthResult(): RouteResult<{ status: string; time: string }> {
+  return ok({ status: "ok", time: new Date().toISOString() });
+}
+
+export async function getGuidanceResult(payload: unknown): Promise<RouteResult<{ text: string } | { error: string }>> {
+  try {
+    const body = asObject(payload);
+    const message = asString(body.message);
+    const chatHistory = Array.isArray(body.chatHistory) ? body.chatHistory : [];
+
+    if (!hasOpenRouterConfig()) {
+      return ok({ text: offlineGuidanceReply(message) });
     }
-  });
-  app.post("/api/sop/polish", async (req, res) => {
-    try {
-      const {
-        academicBackground,
-        targetDegree,
-        targetMajor,
-        motivation,
-        careerGoals,
-        keyAchievements
-      } = req.body;
-      if (!hasOpenRouterConfig()) {
-        return res.json({
-          text: offlineSopReply(
-            academicBackground,
-            targetDegree,
-            targetMajor,
-            motivation,
-            careerGoals,
-            keyAchievements
-          )
-        });
-      }
-      const prompt = `
+
+    const messages: ChatMessage[] = [{ role: "system", content: guidanceSystemPrompt }];
+
+    for (const turn of chatHistory) {
+      const chatTurn = asObject(turn);
+      const text = asString(chatTurn.text);
+
+      if (!text) continue;
+
+      messages.push({
+        role: toChatRole(asString(chatTurn.role)),
+        content: text,
+      });
+    }
+
+    messages.push({
+      role: "user",
+      content: message,
+    });
+
+    const responseText = await generateOpenRouterText(messages, 0.7);
+    return ok({ text: responseText });
+  } catch (error) {
+    console.error("OpenRouter Guidance Error:", error);
+    return fail(getErrorMessage(error, "An unexpected error occurred during your consultation."));
+  }
+}
+
+export async function getSopPolishResult(payload: unknown): Promise<RouteResult<{ text: string } | { error: string }>> {
+  try {
+    const body = asObject(payload);
+    const academicBackground = asString(body.academicBackground);
+    const targetDegree = asString(body.targetDegree);
+    const targetMajor = asString(body.targetMajor);
+    const motivation = asString(body.motivation);
+    const careerGoals = asString(body.careerGoals);
+    const keyAchievements = asString(body.keyAchievements);
+
+    if (!hasOpenRouterConfig()) {
+      return ok({
+        text: offlineSopReply(
+          academicBackground,
+          targetDegree,
+          targetMajor,
+          motivation,
+          careerGoals,
+          keyAchievements,
+        ),
+      });
+    }
+
+    const prompt = `
 Please draft a highly compelling and professional Statement of Purpose (SOP) Outline & Academic Brand Profile.
 
 Applicant Details:
@@ -321,33 +478,42 @@ Provide the output in beautiful Markdown with three main sections:
    - Paragraph 3: Why This Program / School (How to research faculty, alignment with research or curriculum).
    - Paragraph 4: Long-Term Vision & Community Impact (How they will give back to their community/country).
 3. **Refinement Master Tips**: 3 actionable, high-impact tips specifically customized for their profile to secure Graduate Assistantships or funding.
-      `.trim();
-      const responseText = await generateOpenRouterText(
-        [
-          {
-            role: "system",
-            content: "You are an elite Graduate Admissions consultant specializing in fully funded opportunities in the Global North. Your focus is helper outlines that are structured and impactful."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        0.8
-      );
-      res.json({ text: responseText });
-    } catch (error) {
-      console.error("OpenRouter SOP Error:", error);
-      res.status(500).json({ error: error.message || "An unexpected error occurred during your outline formatting." });
+    `.trim();
+
+    const responseText = await generateOpenRouterText(
+      [
+        {
+          role: "system",
+          content: sopSystemPrompt,
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      0.8,
+    );
+
+    return ok({ text: responseText });
+  } catch (error) {
+    console.error("OpenRouter SOP Error:", error);
+    return fail(getErrorMessage(error, "An unexpected error occurred during your outline formatting."));
+  }
+}
+
+export async function getVisaFeedbackResult(
+  payload: unknown,
+): Promise<RouteResult<{ text: string } | { error: string }>> {
+  try {
+    const body = asObject(payload);
+    const questionText = asString(body.questionText);
+    const studentAnswer = asString(body.studentAnswer);
+
+    if (!hasOpenRouterConfig()) {
+      return ok({ text: offlineVisaReply(questionText, studentAnswer) });
     }
-  });
-  app.post("/api/visa/feedback", async (req, res) => {
-    try {
-      const { questionText, studentAnswer } = req.body;
-      if (!hasOpenRouterConfig()) {
-        return res.json({ text: offlineVisaReply(questionText, studentAnswer) });
-      }
-      const prompt = `
+
+    const prompt = `
 In an F-1 Visa Interview simulation, the student was asked:
 "${questionText}"
 
@@ -365,41 +531,25 @@ Provide the feedback in formatted Markdown with:
 - **Strength Check**: What was good about their response.
 - **Risk Factors**: Any red flags (e.g., vague funding, work-heavy language, overconfident statements).
 - **Revised Script Recommendation**: A polished, natural-sounding, and honest alternative draft of their answer that they can speak confidently while remaining fully authentic. Keep the script to 3-5 concise sentences.
-      `.trim();
-      const responseText = await generateOpenRouterText(
-        [
-          {
-            role: "system",
-            content: "You are a former Consular Officer and F-1 Visa Interview Coach. Your feedback is candid, encourages honesty, and polishes language to sound organic and confident."
-          },
-          {
-            role: "user",
-            content: prompt
-          }
-        ],
-        0.7
-      );
-      res.json({ text: responseText });
-    } catch (error) {
-      console.error("OpenRouter Visa Evaluation Error:", error);
-      res.status(500).json({ error: error.message || "An unexpected error occurred during your response evaluation." });
-    }
-  });
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    `.trim();
+
+    const responseText = await generateOpenRouterText(
+      [
+        {
+          role: "system",
+          content: visaSystemPrompt,
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      0.7,
+    );
+
+    return ok({ text: responseText });
+  } catch (error) {
+    console.error("OpenRouter Visa Evaluation Error:", error);
+    return fail(getErrorMessage(error, "An unexpected error occurred during your response evaluation."));
   }
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Ubuntu Rising Scholars Program (URSP) backend listening on http://0.0.0.0:${PORT}`);
-  });
 }
-startServer();
